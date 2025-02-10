@@ -1,0 +1,296 @@
+import sys
+import cv2
+import numpy as np
+import os
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                            QHBoxLayout, QPushButton, QFileDialog, QLabel,
+                            QSlider, QStyle, QMessageBox, QSpinBox)
+from PyQt5.QtCore import Qt, QTimer, QRect, QPoint
+from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen
+
+class VideoConverter(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Video to PNG Converter")
+        self.setGeometry(100, 100, 800, 600)
+        
+        # Video state
+        self.cap = None
+        self.playing = False
+        self.start_frame = 0
+        self.end_frame = 0
+        self.current_frame = 0
+        self.crop_rect = QRect()
+        self.drawing = False
+        
+        # Add crop handles visibility
+        self.crop_visible = True
+        
+        # UI Setup
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+        
+        # File selection
+        self.btn_open = QPushButton("Open Video")
+        self.btn_open.clicked.connect(self.open_file)
+        layout.addWidget(self.btn_open)
+        
+        # Video display
+        self.video_label = QLabel()
+        self.video_label.setAlignment(Qt.AlignCenter)
+        self.video_label.mousePressEvent = self.mouse_press
+        self.video_label.mouseMoveEvent = self.mouse_move
+        self.video_label.mouseReleaseEvent = self.mouse_release
+        layout.addWidget(self.video_label)
+        
+        # Playback controls
+        control_layout = QHBoxLayout()
+        self.btn_play = QPushButton()
+        self.btn_play.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.btn_play.clicked.connect(self.toggle_playback)
+        control_layout.addWidget(self.btn_play)
+        
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.sliderMoved.connect(self.set_position)
+        control_layout.addWidget(self.slider)
+        layout.addLayout(control_layout)
+        
+        # Range selection
+        range_layout = QHBoxLayout()
+        self.start_slider = QSlider(Qt.Horizontal)
+        self.start_slider.setStyleSheet("QSlider::handle:horizontal { background: red; }")
+        self.start_slider.sliderMoved.connect(self.update_start)
+        self.start_slider.sliderReleased.connect(self.show_current_range)
+        range_layout.addWidget(self.start_slider)
+        
+        self.end_slider = QSlider(Qt.Horizontal)
+        self.end_slider.setStyleSheet("QSlider::handle:horizontal { background: blue; }")
+        self.end_slider.sliderMoved.connect(self.update_end)
+        self.end_slider.sliderReleased.connect(self.show_current_range)
+        range_layout.addWidget(self.end_slider)
+        layout.addLayout(range_layout)
+        
+        # Add threshold controls
+        threshold_layout = QHBoxLayout()
+        self.threshold_label = QLabel("Difference Threshold (1-100):")
+        self.threshold_input = QSpinBox()
+        self.threshold_input.setRange(1, 100)
+        self.threshold_input.setValue(1)
+        threshold_layout.addWidget(self.threshold_label)
+        threshold_layout.addWidget(self.threshold_input)
+        layout.addLayout(threshold_layout)
+        
+        # Conversion controls
+        self.btn_convert = QPushButton("Convert to PNG")
+        self.btn_convert.clicked.connect(self.convert_video)
+        layout.addWidget(self.btn_convert)
+        
+        # Timer for video playback
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+        
+    def open_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open Video", "", "MP4 Files (*.mp4)")
+        if path:
+            self.cap = cv2.VideoCapture(path)
+            if not self.cap.isOpened():
+                QMessageBox.critical(self, "Error", "Could not open video file")
+                return
+                
+            # Initialize crop rectangle to full video size
+            self.original_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.original_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self.crop_rect = QRect(0, 0, self.original_width, self.original_height)
+            
+            self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self.slider.setMaximum(self.total_frames)
+            self.start_slider.setMaximum(self.total_frames)
+            self.end_slider.setMaximum(self.total_frames)
+            self.end_slider.setValue(self.total_frames)
+            self.start_frame = 0
+            self.end_frame = self.total_frames
+            self.show_frame(0)
+            
+    def show_frame(self, frame_num):
+        if self.cap:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+            ret, frame = self.cap.read()
+            if ret:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = frame.shape
+                bytes_per_line = ch * w
+                q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                pixmap = QPixmap.fromImage(q_img)
+                
+                # Draw crop rectangle with boundary checks
+                if not self.crop_rect.isNull() and self.crop_visible:
+                    # Keep rectangle within video bounds
+                    self.crop_rect = self.crop_rect.intersected(QRect(0, 0, w, h))
+                    
+                    painter = QPainter(pixmap)
+                    painter.setPen(QPen(Qt.red, 2, Qt.DashLine))
+                    
+                    # Convert coordinates for scaled display
+                    scale_x = pixmap.width() / w
+                    scale_y = pixmap.height() / h
+                    display_rect = QRect(
+                        int(self.crop_rect.x() * scale_x),
+                        int(self.crop_rect.y() * scale_y),
+                        int(self.crop_rect.width() * scale_x),
+                        int(self.crop_rect.height() * scale_y)
+                    )
+                    painter.drawRect(display_rect)
+                    painter.end()
+                
+                self.video_label.setPixmap(pixmap.scaled(self.video_label.size(), 
+                                                       Qt.KeepAspectRatio))
+                
+    def toggle_playback(self):
+        self.playing = not self.playing
+        self.btn_play.setIcon(self.style().standardIcon(
+            QStyle.SP_MediaPlay if not self.playing else QStyle.SP_MediaPause))
+        if self.playing:
+            self.timer.start(30)
+        else:
+            self.timer.stop()
+            
+    def update_frame(self):
+        if self.current_frame < self.end_frame:
+            self.current_frame += 1
+            self.slider.setValue(self.current_frame)
+            self.show_frame(self.current_frame)
+        else:
+            self.toggle_playback()
+            
+    def set_position(self, position):
+        self.current_frame = position
+        self.show_frame(position)
+        
+    def update_start(self, position):
+        self.start_frame = min(position, self.end_frame-1)
+        self.start_slider.setValue(self.start_frame)
+        self.show_frame(self.start_frame)
+
+    def update_end(self, position):
+        self.end_frame = max(position, self.start_frame+1)
+        self.end_slider.setValue(self.end_frame)
+        self.show_frame(self.end_frame)
+
+    def show_current_range(self):
+        self.show_frame(self.current_frame)
+
+    def mouse_press(self, event):
+        if self.cap:
+            # Convert mouse position to original video coordinates
+            pixmap = self.video_label.pixmap()
+            scale_x = self.original_width / pixmap.width()
+            scale_y = self.original_height / pixmap.height()
+            
+            pos = event.pos()
+            x = int((pos.x() - (self.video_label.width() - pixmap.width())/2) * scale_x)
+            y = int((pos.y() - (self.video_label.height() - pixmap.height())/2) * scale_y)
+            
+            # Keep within video bounds
+            x = max(0, min(x, self.original_width))
+            y = max(0, min(y, self.original_height))
+            
+            self.drawing = True
+            self.crop_rect.setTopLeft(QPoint(x, y))
+            self.crop_rect.setBottomRight(QPoint(x, y))
+
+    def mouse_move(self, event):
+        if self.drawing and self.cap:
+            # Same coordinate conversion as mouse_press
+            pixmap = self.video_label.pixmap()
+            scale_x = self.original_width / pixmap.width()
+            scale_y = self.original_height / pixmap.height()
+            
+            pos = event.pos()
+            x = int((pos.x() - (self.video_label.width() - pixmap.width())/2) * scale_x)
+            y = int((pos.y() - (self.video_label.height() - pixmap.height())/2) * scale_y)
+            
+            # Keep within video bounds
+            x = max(0, min(x, self.original_width))
+            y = max(0, min(y, self.original_height))
+            
+            self.crop_rect.setBottomRight(QPoint(x, y))
+            self.show_frame(self.current_frame)
+
+    def mouse_release(self, event):
+        self.drawing = False
+        self.crop_rect = self.crop_rect.normalized()
+        
+    def convert_video(self):
+        if not self.cap:
+            QMessageBox.critical(self, "Error", "No video loaded")
+            return
+            
+        # Get threshold from input
+        threshold = self.threshold_input.value()
+        
+        # Get conversion parameters
+        output_folder = "output_frames"
+        
+        # Validate crop rectangle
+        if self.crop_rect.width() < 10 or self.crop_rect.height() < 10:
+            QMessageBox.critical(self, "Error", "Invalid crop area")
+            return
+
+        try:
+            # Set up video capture with time range
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.start_frame)
+            prev_frame = None
+            frame_count = 0
+            saved_count = 0
+            
+            # Create output directory
+            os.makedirs(output_folder, exist_ok=True)
+
+            # Conversion loop
+            while self.cap.isOpened() and frame_count <= (self.end_frame - self.start_frame):
+                ret, frame = self.cap.read()
+                if not ret:
+                    break
+
+                # Apply spatial crop
+                x = self.crop_rect.x()
+                y = self.crop_rect.y()
+                w = self.crop_rect.width()
+                h = self.crop_rect.height()
+                cropped = frame[y:y+h, x:x+w]
+
+                # Compare with previous frame
+                if prev_frame is not None:
+                    diff = cv2.absdiff(cropped, prev_frame)
+                    mean_diff = np.mean(diff)
+                    
+                    if mean_diff > threshold:
+                        # Save frame
+                        filename = os.path.join(output_folder, f"frame_{saved_count:04d}.png")
+                        cv2.imwrite(filename, cropped)
+                        saved_count += 1
+
+                prev_frame = cropped.copy()
+                frame_count += 1
+
+                # Update progress
+                if frame_count % 10 == 0:
+                    self.slider.setValue(self.start_frame + frame_count)
+                    QApplication.processEvents()
+
+            QMessageBox.information(self, "Success", 
+                                   f"Saved {saved_count} frames to {output_folder}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Conversion failed: {str(e)}")
+            
+        finally:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)  # Restore playback position
+            self.show_frame(self.current_frame)
+        
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = VideoConverter()
+    window.show()
+    sys.exit(app.exec_())
