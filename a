@@ -1,0 +1,163 @@
+# First run these commands in your terminal:
+# pip install Pillow pyautogui
+
+import os
+import shutil
+import pyautogui
+import time
+import re
+from datetime import datetime
+from PIL import ImageGrab
+import pytesseract
+from tkinter import Tk, filedialog, messagebox, Checkbutton, Entry, BooleanVar, Button, W
+
+# Configure Tesseract path
+pyautogui.PAUSE = 0.2
+
+# Configuration
+TASKS = {
+    "paint4.fsk": 60,
+    "paint11.fsk": 60,
+    "paint10.fsk": 40
+}
+
+class App(Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Paint Automation")
+        self.check_vars = []
+        self.entries = []
+        
+        # Create task controls
+        for i, (task, default_val) in enumerate(TASKS.items()):
+            var = BooleanVar(value=True)
+            self.check_vars.append(var)
+            
+            # Checkbox + Label
+            Checkbutton(self, text=task, variable=var).grid(row=i, column=0, sticky=W)
+            
+            # Percentage entry
+            entry = Entry(self, width=5, validate='key',
+                        vcmd=(self.register(self.validate_percent), '%P'))
+            entry.insert(0, str(default_val))
+            entry.grid(row=i, column=1)
+            self.entries.append(entry)
+            
+        # Launch button
+        Button(self, text="Launch", command=self.launch).grid(row=len(TASKS), columnspan=2)
+        
+    def validate_percent(self, text):
+        return text.isdigit() and 0 <= int(text) <= 100 or text == ""
+        
+    def launch(self):
+        selected_tasks = []
+        for (task, _), var, entry in zip(TASKS.items(), self.check_vars, self.entries):
+            if var.get():
+                try:
+                    selected_tasks.append((task, int(entry.get())))
+                except ValueError:
+                    messagebox.showerror("Error", f"Invalid percentage for {task}")
+                    return
+                    
+        if not selected_tasks:
+            messagebox.showwarning("Warning", "No tasks selected")
+            return
+            
+        # Ask for folder once here
+        target_folder = filedialog.askdirectory(title="Select Target Folder")
+        if not target_folder:
+            return
+            
+        # Run all selected tasks with the same folder
+        for task_name, percent in selected_tasks:
+            self.run_task(task_name, percent, target_folder)
+            
+    def run_task(self, task_name, target_percent, target_folder):
+        # Task-specific automation
+        time.sleep(1)
+        pyautogui.click(639,294)
+        time.sleep(1)
+        pyautogui.write(task_name)
+        pyautogui.press('enter')
+        pyautogui.click(1239, 645)
+        
+        while True:
+            pyautogui.click(259, 47)
+            time.sleep(0.2)
+            
+            if self.check_folder_percentage(target_folder, target_percent):
+                pyautogui.press('esc', presses=2, interval=0.3)
+                pyautogui.press('enter')
+                self.move_processed_files(target_folder, task_name)
+                break
+            else:
+                pyautogui.press('enter', presses=2, interval=0.3)
+                time.sleep
+
+    def check_folder_percentage(self, target_folder, target_percent):
+        """Check selected folder for percentage files"""
+        try:
+            for file in os.listdir(target_folder):
+                if "%" in file:
+                    match = re.search(r'(\d+)%', file)
+                    if match:
+                        percent = int(match.group(1))
+                        if percent >= target_percent:
+                            return True
+            return False
+        except Exception as e:
+            print(f"Folder error: {str(e)}")
+            return False
+
+    def move_processed_files(self, target_folder, task_name):
+        """Move processed files to task-specific subfolder"""
+        # Extract base name without extension (paint4, paint11, etc)
+        folder_name = task_name.split('.')[0]
+        dest_folder = os.path.join(target_folder, folder_name)
+        
+        # Clean/create destination folder
+        if os.path.exists(dest_folder):
+            for filename in os.listdir(dest_folder):
+                file_path = os.path.join(dest_folder, filename)
+                try:
+                    if os.path.isfile(file_path):
+                        os.unlink(file_path)
+                except Exception as e:
+                    print(f"Error deleting {file_path}: {e}")
+        else:
+            os.makedirs(dest_folder, exist_ok=True)
+            
+        # Move files
+        moved_files = 0
+        for filename in os.listdir(target_folder):
+            if "fotosketcher" in filename.lower() and "%" in filename:
+                src = os.path.join(target_folder, filename)
+                dst = os.path.join(dest_folder, filename)
+                shutil.move(src, dst)
+                moved_files += 1
+        print(f"Moved {moved_files} files to {dest_folder}")
+
+def select_target_folder():
+    """Open dialog to select monitoring folder"""
+    root = Tk()
+    root.withdraw()  # Hide main window
+    folder = filedialog.askdirectory(title="Select Target Folder")
+    root.destroy()
+    return folder
+
+def main():
+    """Entry point with folder selection"""
+    '''print("Starting automation - Please select target folder")
+    target_folder = select_target_folder()
+    
+    if not target_folder:
+        print("No folder selected. Exiting...")
+        return
+    
+    print(f"Monitoring folder: {target_folder}")'''
+    App().mainloop()
+    print("Automation completed when target percentage was found!")
+
+if __name__ == "__main__":
+    main()
+
